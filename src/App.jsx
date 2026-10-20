@@ -12,7 +12,6 @@ import { distanceMeters } from './lib/format.js';
 import { boundsContain, fetchBusinesses, snapBounds } from './lib/overpass.js';
 import { DEFAULT_RECORD, buildCsv, downloadCsv, loadRecords, saveRecords } from './lib/records.js';
 import { fetchParisPartners, normalizeBusiness, searchCompanies } from './lib/sources.js';
-import { fetchCommunes, matchCommune } from './lib/communes.js';
 
 const PARIS_CENTER = [48.8566, 2.3522];
 const MIN_ZOOM_TO_LOAD = 13;
@@ -47,11 +46,6 @@ export default function App() {
   useEffect(() => setCommitted(debouncedText), [debouncedText]);
   const search = useMemo(() => resolveQuery(committed), [committed]);
   const [area, setArea] = useState('paris');
-  const [cityQuery, setCityQuery] = useState('');
-  const [communes, setCommunes] = useState([]);
-  const [communesLoading, setCommunesLoading] = useState(false);
-  const [communesError, setCommunesError] = useState('');
-  const communeController = useRef(null);
   const arrondissement = area.startsWith('arr-') ? getArrondissement(area.slice(4)) : null;
   const outlineBounds = area.startsWith('arr-') || area.startsWith('dep-') ? areaBounds(area) : null;
 
@@ -103,39 +97,6 @@ export default function App() {
     },
     []
   );
-
-  useEffect(() => {
-    if (!area.startsWith('dep-')) {
-      communeController.current?.abort();
-      communeController.current = null;
-      setCommunes([]);
-      setCommunesLoading(false);
-      setCommunesError('');
-      return undefined;
-    }
-    const controller = new AbortController();
-    communeController.current?.abort();
-    communeController.current = controller;
-    setCommunes([]);
-    setCommunesError('');
-    setCommunesLoading(true);
-    fetchCommunes(area.slice(4), controller.signal)
-      .then((results) => {
-        if (communeController.current === controller) setCommunes(results);
-      })
-      .catch((error) => {
-        if (error.name !== 'AbortError' && communeController.current === controller) {
-          setCommunesError(error.message);
-        }
-      })
-      .finally(() => {
-        if (communeController.current === controller) {
-          communeController.current = null;
-          setCommunesLoading(false);
-        }
-      });
-    return () => controller.abort();
-  }, [area]);
 
   // ----- fetch businesses from Overpass for the visible bounds -----
   // A new search replaces the previous results...
@@ -231,18 +192,9 @@ export default function App() {
 
   const onAreaChange = (value) => {
     setArea(value);
-    setCityQuery('');
     setSelectedKey(null);
     const bounds = areaBounds(value);
     if (bounds && mapRef.current) mapRef.current.flyToBounds(toLeafletBounds(bounds), { padding: [16, 16], duration: 0.8 });
-  };
-
-  const onCityQueryChange = (value) => {
-    setCityQuery(value);
-    const commune = matchCommune(value, communes);
-    if (!commune) return;
-    mapRef.current?.flyTo([commune.lat, commune.lon], 14, { duration: 0.8 });
-    setNotice(`${commune.name}${commune.postcodes.length ? ` · ${commune.postcodes.join(', ')}` : ''}`);
   };
 
   const locate = () => {
@@ -431,35 +383,6 @@ export default function App() {
                   {locating ? '…' : '◎'}
                 </button>
               </div>
-              {area.startsWith('dep-') && (
-                <div className="city-search">
-                  <label htmlFor="city-search">Find a city in {area.slice(4)}</label>
-                  <input
-                    id="city-search"
-                    className="text-input"
-                    type="search"
-                    list="department-communes"
-                    value={cityQuery}
-                    maxLength={80}
-                    autoComplete="off"
-                    placeholder={communesLoading ? 'Loading cities…' : 'Type or choose a city'}
-                    disabled={communesLoading || Boolean(communesError)}
-                    onChange={(e) => onCityQueryChange(e.target.value)}
-                  />
-                  <datalist id="department-communes">
-                    {communes.map((commune) => (
-                      <option
-                        key={commune.code}
-                        value={commune.name}
-                        label={commune.postcodes.join(', ')}
-                      />
-                    ))}
-                  </datalist>
-                  <p className={`search-hint${communesError ? ' is-error' : ''}`}>
-                    {communesError || (communesLoading ? 'Loading cities…' : 'Choose a suggestion to center the map on that city.')}
-                  </p>
-                </div>
-              )}
             </form>
 
             <label className="check">

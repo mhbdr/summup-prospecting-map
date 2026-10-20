@@ -67,10 +67,6 @@ label { display: block; margin: 14px 0 6px; font-size: 12px; font-weight: 700; c
 .registry summary { cursor: pointer; font-size: 13px; font-weight: 650; color: var(--green); }
 .registry form { display: grid; gap: 8px; margin-top: 10px; }
 .search-hint { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
-.search-hint.is-error { color: var(--red); }
-.city-search { margin-top: 2px; }
-.city-search label { margin-top: 10px; }
-.city-search .search-hint { margin-top: 5px; }
 
 /* ---------- results ---------- */
 .results-section { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 14px 22px 0; }
