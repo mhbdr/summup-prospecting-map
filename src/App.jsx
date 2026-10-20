@@ -8,7 +8,7 @@ import { ARRONDISSEMENTS, getArrondissement, inBounds, matchesArrondissement } f
 import { DEPARTMENTS, IDF_BOUNDS, PARIS_BOUNDS, getDepartment, registryDepartments } from './lib/departments.js';
 import { distanceMeters } from './lib/format.js';
 import { DEFAULT_RECORD, buildCsv, downloadCsv, loadRecords, saveRecords } from './lib/records.js';
-import { fetchParisPartners, normalizeBusiness, searchCompanies } from './lib/sources.js';
+import { normalizeBusiness, searchCompanies, searchNearbyBusinesses } from './lib/sources.js';
 
 const PARIS_CENTER = [48.8566, 2.3522];
 const MAX_LIST_ROWS = 400;
@@ -48,10 +48,13 @@ export default function App() {
   const [companyItems, setCompanyItems] = useState(() => new Map());
   const [companyQuery, setCompanyQuery] = useState('');
   const [companyBusy, setCompanyBusy] = useState(false);
+  const [nearbyBusy, setNearbyBusy] = useState(false);
+  const [nearbyPage, setNearbyPage] = useState(0);
+  const [nearbyTotalPages, setNearbyTotalPages] = useState(0);
+  const [nearbyBounds, setNearbyBounds] = useState(null);
   const [notice, setNotice] = useState('');
-  const [showPartners, setShowPartners] = useState(false);
-  const [partners, setPartners] = useState([]);
   const companyController = useRef(null);
+  const nearbyController = useRef(null);
 
   // ----- interaction -----
   const [selectedKey, setSelectedKey] = useState(null);
@@ -80,23 +83,10 @@ export default function App() {
     () => () => {
       clearTimeout(toastTimer.current);
       companyController.current?.abort();
+      nearbyController.current?.abort();
     },
     []
   );
-
-  // Eau de Paris partner shops (optional layer).
-  useEffect(() => {
-    if (!showPartners || partners.length) return undefined;
-    const controller = new AbortController();
-    fetchParisPartners(controller.signal)
-      .then(setPartners)
-      .catch((err) => {
-        if (err.name === 'AbortError') return;
-        setShowPartners(false);
-        showToast(`Paris Open Data is unavailable (${err.message})`);
-      });
-    return () => controller.abort();
-  }, [showPartners, partners.length, showToast]);
 
   // ----- derived lists -----
   const allItems = useMemo(() => {
@@ -105,9 +95,8 @@ export default function App() {
       if (matchesArrondissement(item, arrondissement)) out.push(item);
     };
     companyItems.forEach(add);
-    if (showPartners) partners.forEach(add);
     return out;
-  }, [companyItems, partners, showPartners, arrondissement]);
+  }, [companyItems, arrondissement]);
 
   const itemsByKey = useMemo(() => new Map(allItems.map((i) => [i.key, i])), [allItems]);
 
@@ -226,12 +215,53 @@ export default function App() {
     }
   };
 
+  const runNearbySearch = async (page = 1, bounds = viewport?.bounds) => {
+    if (!bounds) return;
+    if (page === 1) {
+      setNearbyBounds(bounds);
+      setNearbyPage(0);
+      setNearbyTotalPages(0);
+      setCompanyItems(new Map());
+    }
+    nearbyController.current?.abort();
+    const controller = new AbortController();
+    nearbyController.current = controller;
+    setNearbyBusy(true);
+    setNotice(page === 1 ? 'Searching official open business data for this map area…' : `Loading more official results (page ${page})…`);
+    try {
+      const result = await searchNearbyBusinesses(bounds, page, controller.signal);
+      if (nearbyController.current !== controller) return;
+      setCompanyItems((previous) => {
+        const next = new Map(previous);
+        result.items.forEach((item) => next.set(item.key, item));
+        return next;
+      });
+      setNearbyPage(result.page);
+      setNearbyTotalPages(result.totalPages);
+      setNearbyBounds(bounds);
+      setNotice(
+        `${result.items.length} geolocated active retail or food-service establishments found on page ${result.page}. ` +
+          `Search radius: ${result.radius} km from the map center.` +
+          (result.coversBounds ? '' : ' This map view is larger than the API limit; zoom in and search other sections.') +
+          ' Some businesses have no public coordinates.'
+      );
+    } catch (error) {
+      if (nearbyController.current !== controller) return;
+      setNotice(error.name === 'AbortError' ? 'The open-data search timed out. Please try again.' : error.message);
+    } finally {
+      if (nearbyController.current === controller) {
+        nearbyController.current = null;
+        setNearbyBusy(false);
+      }
+    }
+  };
+
   // ----- status line -----
   const message = totalInView
     ? `${totalInView} result${totalInView === 1 ? '' : 's'} in view` +
       (totalInView > MAX_LIST_ROWS ? ` (list shows the first ${MAX_LIST_ROWS}; zoom in for the rest)` : '') +
       '.'
-    : 'Search the French company register or enable Paris Open Data partners to add businesses to the map.';
+    : 'Click “Find shops in this map area” to load geolocated retail and food-service businesses from official French open data.';
 
   return (
     <div className="app">
@@ -289,10 +319,28 @@ export default function App() {
               </div>
             </div>
 
-            <label className="check">
-              <input type="checkbox" checked={showPartners} onChange={(e) => setShowPartners(e.target.checked)} />
-              Show Eau de Paris water-refill partners
-            </label>
+            <button
+              type="button"
+              className="button button-primary nearby-search-button"
+              disabled={!viewport || nearbyBusy}
+              onClick={() => runNearbySearch(1, viewport?.bounds)}
+            >
+              {nearbyBusy && nearbyPage === 0 ? 'Searching open data…' : 'Find shops in this map area'}
+            </button>
+            <p className="search-hint">
+              Official French SIRENE open data: active commerce and food-service businesses with published coordinates.
+              Searches run only when you click; move the map and search again to cover another area.
+            </p>
+            {nearbyPage > 0 && nearbyPage < nearbyTotalPages && (
+              <button
+                type="button"
+                className="button button-secondary load-more-button"
+                disabled={nearbyBusy}
+                onClick={() => runNearbySearch(nearbyPage + 1, nearbyBounds)}
+              >
+                {nearbyBusy ? 'Loading…' : `Load more businesses (${nearbyPage + 1} of ${nearbyTotalPages})`}
+              </button>
+            )}
 
             <details className="registry">
               <summary>Search the French company register</summary>
@@ -326,7 +374,7 @@ export default function App() {
           </section>
 
           <footer className="sidebar-footer">
-            Sources: Paris Open Data and the French company-search API. OpenStreetMap is used for map tiles only. Payment methods are never guessed:
+            Sources: official French SIRENE open data. OpenStreetMap is used for map tiles only. Payment methods are never guessed:
             every business starts as “Not verified”.
           </footer>
         </aside>

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { ARRONDISSEMENTS, matchesArrondissement, getArrondissement } from '../src/lib/arrondissements.js';
 import { safeUrl, distanceMeters, formatDistance } from '../src/lib/format.js';
 import { buildCsv, paymentLabel } from '../src/lib/records.js';
-import { normalizeBusiness } from '../src/lib/sources.js';
+import { boundsSearchPoint, normalizeBusiness, searchNearbyBusinesses } from '../src/lib/sources.js';
 
 let passed = 0;
 const test = async (name, fn) => {
@@ -39,6 +39,67 @@ await test('distance helpers', () => {
   assert.ok(d > 3000 && d < 3400, String(d));
   assert.equal(formatDistance(430), '430 m');
   assert.equal(formatDistance(1520), '1.5 km');
+});
+
+await test('SIRENE nearby search: map radius, active geolocated businesses, and paging', async () => {
+  const point = boundsSearchPoint([48.85, 2.34, 48.86, 2.36]);
+  assert.ok(point.radius >= 1 && point.radius <= 50);
+  assert.equal(point.coversBounds, true);
+  assert.throws(() => boundsSearchPoint([1, 2, 0, 3]), /bounds are invalid/);
+  assert.equal(boundsSearchPoint([40, -10, 50, 10]).coversBounds, false);
+
+  const originalFetch = globalThis.fetch;
+  let requestUrl;
+  globalThis.fetch = async (url) => {
+    requestUrl = new URL(url);
+    return new Response(JSON.stringify({
+      page: 2,
+      total_pages: 4,
+      total_results: 100,
+      results: [
+        {
+          nom_complet: 'Boulangerie Test',
+          activite_principale: '47.24Z',
+          matching_etablissements: [
+            {
+              siret: '12345678900011',
+              etat_administratif: 'A',
+              latitude: '48.855',
+              longitude: '2.35',
+              adresse: '1 Rue Test, 75001 Paris',
+              code_postal: '75001',
+              libelle_commune: 'PARIS',
+            },
+            {
+              siret: '12345678900012',
+              etat_administratif: 'F',
+              latitude: '48.855',
+              longitude: '2.35',
+            },
+            {
+              siret: '12345678900013',
+              etat_administratif: 'A',
+              latitude: '49.5',
+              longitude: '2.35',
+            },
+          ],
+        },
+      ],
+    }), { status: 200 });
+  };
+  try {
+    const result = await searchNearbyBusinesses([48.85, 2.34, 48.86, 2.36], 2);
+    assert.equal(requestUrl.pathname, '/near_point');
+    assert.equal(requestUrl.searchParams.get('section_activite_principale'), 'G,I');
+    assert.equal(requestUrl.searchParams.get('page'), '2');
+    assert.equal(result.page, 2);
+    assert.equal(result.totalPages, 4);
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0].name, 'Boulangerie Test');
+    assert.equal(result.items[0].postcode, '75001');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 await test('records: CSV export + legacy record shape from the old app', () => {

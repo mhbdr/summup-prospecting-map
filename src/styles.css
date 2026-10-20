@@ -57,8 +57,8 @@ label { display: block; margin: 14px 0 6px; font-size: 12px; font-weight: 700; c
 /* ---------- search panel ---------- */
 .search-panel { flex: none; padding: 6px 22px 16px; border-bottom: 1px solid var(--line); }
 .search-buttons { display: flex; gap: 8px; }
-.check { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-weight: 500; font-size: 13px; cursor: pointer; }
-.check input { width: 16px; height: 16px; accent-color: var(--green); }
+.nearby-search-button { width: 100%; margin-top: 14px; }
+.load-more-button { width: 100%; margin-top: 8px; }
 .registry { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .registry summary { cursor: pointer; font-size: 13px; font-weight: 650; color: var(--green); }
 .registry form { display: grid; gap: 8px; margin-top: 10px; }

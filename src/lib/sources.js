@@ -1,9 +1,8 @@
-// Additional data sources carried over from the original Field Finder app.
+// Open-data sources used by Field Finder.
 import { inBounds } from './arrondissements.js';
 
-const PARIS_PARTNERS_API =
-  'https://opendata.paris.fr/api/explore/v2.1/catalog/datasets/commerces-eau-de-paris/exports/json';
 const COMPANY_SEARCH_API = 'https://recherche-entreprises.api.gouv.fr/search';
+const NEARBY_COMPANIES_API = 'https://recherche-entreprises.api.gouv.fr/near_point';
 const TIMEOUT_MS = 25000;
 
 function withTimeout(signal) {
@@ -20,46 +19,99 @@ function withTimeout(signal) {
   };
 }
 
-let partnersCache = null;
-
-/** Eau de Paris water-refill partner shops (City of Paris open data). Downloaded once per session. */
-export async function fetchParisPartners(signal) {
-  if (!partnersCache) {
-    const t = withTimeout(signal);
-    try {
-      const res = await fetch(PARIS_PARTNERS_API, { signal: t.signal });
-      if (!res.ok) throw new Error(`Paris Open Data returned ${res.status}.`);
-      const payload = await res.json();
-      if (!Array.isArray(payload)) throw new Error('Paris Open Data returned an unexpected format.');
-      partnersCache = payload
-        .map((r) => ({
-          key: `paris/${r.id}`,
-          id: String(r.id),
-          type: 'paris',
-          source: 'Paris Open Data',
-          sourceUrl: 'https://opendata.paris.fr/explore/dataset/commerces-eau-de-paris/',
-          lat: Number(r.lat),
-          lon: Number(r.lon),
-          name: r.nom_commerce || 'Unnamed partner',
-          kind: 'Eau de Paris water-refill partner',
-          housenumber: r.num_voie || '',
-          street: r.nom_voie || '',
-          postcode: r.code_postal && r.code_postal !== '0' ? String(r.code_postal) : '',
-          city: r.nom_commune || 'Paris',
-          hours: '',
-          website: '',
-          phone: '',
-        }))
-        .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon));
-    } finally {
-      t.done();
-    }
+export function boundsSearchPoint([south, west, north, east]) {
+  if (![south, west, north, east].every(Number.isFinite) || south >= north || west >= east) {
+    throw new Error('The map bounds are invalid.');
   }
-  return partnersCache;
+  const lat = (south + north) / 2;
+  const lon = (west + east) / 2;
+  const distanceKm = (cornerLat, cornerLon) => {
+    const toRadians = (value) => (value * Math.PI) / 180;
+    const deltaLat = toRadians(cornerLat - lat);
+    const deltaLon = toRadians(cornerLon - lon);
+    const a =
+      Math.sin(deltaLat / 2) ** 2 +
+      Math.cos(toRadians(lat)) * Math.cos(toRadians(cornerLat)) * Math.sin(deltaLon / 2) ** 2;
+    return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+  const maxDistance = Math.max(
+    distanceKm(south, west),
+    distanceKm(south, east),
+    distanceKm(north, west),
+    distanceKm(north, east)
+  );
+  const radius = Math.min(50, Math.max(1, Math.ceil(maxDistance)));
+  return { lat, lon, radius, coversBounds: maxDistance <= 50 };
 }
 
-export function partnersInBounds(partners, [s, w, n, e]) {
-  return partners.filter((p) => inBounds(p.lat, p.lon, [s, w, n, e]));
+function normalizeEstablishments(companies, bounds, source) {
+  const bySiret = new Map();
+  for (const company of companies) {
+    for (const establishment of company.matching_etablissements || []) {
+      if (establishment.etat_administratif !== 'A' || !establishment.siret) continue;
+      const lat = Number(establishment.latitude);
+      const lon = Number(establishment.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon) || !inBounds(lat, lon, bounds)) continue;
+      const activity = establishment.activite_principale || company.activite_principale || '';
+      bySiret.set(establishment.siret, {
+        key: `company/${establishment.siret}`,
+        id: establishment.siret,
+        type: 'company',
+        source,
+        sourceUrl: `https://annuaire-entreprises.data.gouv.fr/etablissement/${encodeURIComponent(establishment.siret)}`,
+        lat,
+        lon,
+        name:
+          establishment.nom_commercial ||
+          establishment.liste_enseignes?.[0] ||
+          company.nom_complet ||
+          company.nom_raison_sociale ||
+          'Unnamed establishment',
+        kind: `Company · NAF ${activity || 'not listed'}`,
+        fullAddress: establishment.adresse || '',
+        housenumber: '',
+        street: '',
+        postcode: establishment.code_postal || '',
+        city: establishment.libelle_commune || '',
+        hours: '',
+        website: '',
+        phone: '',
+      });
+    }
+  }
+  return [...bySiret.values()];
+}
+
+/** Active retail and food-service establishments in the current map area, from the official SIRENE index. */
+export async function searchNearbyBusinesses(bounds, page = 1, signal) {
+  const point = boundsSearchPoint(bounds);
+  const params = new URLSearchParams({
+    lat: String(point.lat),
+    long: String(point.lon),
+    radius: String(point.radius),
+    section_activite_principale: 'G,I',
+    per_page: '25',
+    page: String(page),
+    page_etablissements: '1',
+    limite_matching_etablissements: '100',
+  });
+  const t = withTimeout(signal);
+  try {
+    const res = await fetch(`${NEARBY_COMPANIES_API}?${params}`, { signal: t.signal });
+    if (!res.ok) throw new Error(`The French company-search API returned ${res.status}.`);
+    const payload = await res.json();
+    if (!Array.isArray(payload.results)) throw new Error('The French company-search API returned an unexpected response.');
+    return {
+      items: normalizeEstablishments(payload.results, bounds, 'API Recherche d’entreprises · SIRENE'),
+      page: payload.page || page,
+      totalPages: payload.total_pages || 1,
+      totalCompanies: payload.total_results || 0,
+      radius: point.radius,
+      coversBounds: point.coversBounds,
+    };
+  } finally {
+    t.done();
+  }
 }
 
 /** French company register (API Recherche d'entreprises): active establishments inside bounds. */
@@ -78,36 +130,7 @@ export async function searchCompanies(query, department, bounds, signal) {
     if (!res.ok) throw new Error(`The company-search API returned ${res.status}.`);
     const payload = await res.json();
     if (!Array.isArray(payload.results)) throw new Error('The company-search API returned an unexpected response.');
-    const bySiret = new Map();
-    for (const company of payload.results) {
-      for (const est of company.matching_etablissements || []) {
-        if (est.etat_administratif !== 'A' || !est.siret) continue;
-        const lat = Number(est.latitude);
-        const lon = Number(est.longitude);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon) || !inBounds(lat, lon, bounds)) continue;
-        const activity = est.activite_principale || company.activite_principale || '';
-        bySiret.set(est.siret, {
-          key: `company/${est.siret}`,
-          id: est.siret,
-          type: 'company',
-          source: 'API Recherche d’entreprises',
-          sourceUrl: `https://annuaire-entreprises.data.gouv.fr/etablissement/${encodeURIComponent(est.siret)}`,
-          lat,
-          lon,
-          name: est.nom_commercial || company.nom_complet || company.nom_raison_sociale || 'Unnamed establishment',
-          kind: `Company · NAF ${activity || 'not listed'}`,
-          fullAddress: est.adresse || '',
-          housenumber: '',
-          street: '',
-          postcode: '',
-          city: '',
-          hours: '',
-          website: '',
-          phone: '',
-        });
-      }
-    }
-    return [...bySiret.values()];
+    return normalizeEstablishments(payload.results, bounds, 'API Recherche d’entreprises · SIRENE');
   } finally {
     t.done();
   }
