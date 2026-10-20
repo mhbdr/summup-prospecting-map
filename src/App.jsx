@@ -4,18 +4,13 @@ import ClusterLayer from './components/ClusterLayer.jsx';
 import BusinessList from './components/BusinessList.jsx';
 import BusinessDialog from './components/BusinessDialog.jsx';
 import { AreaOutline, MapEvents, UserLocation } from './components/MapBits.jsx';
-import { useDebounced } from './hooks.js';
-import { QUICK_PICKS, resolveQuery } from './lib/categories.js';
 import { ARRONDISSEMENTS, getArrondissement, inBounds, matchesArrondissement } from './lib/arrondissements.js';
 import { DEPARTMENTS, IDF_BOUNDS, PARIS_BOUNDS, getDepartment, registryDepartments } from './lib/departments.js';
 import { distanceMeters } from './lib/format.js';
-import { boundsContain, fetchBusinesses, snapBounds } from './lib/overpass.js';
 import { DEFAULT_RECORD, buildCsv, downloadCsv, loadRecords, saveRecords } from './lib/records.js';
 import { fetchParisPartners, normalizeBusiness, searchCompanies } from './lib/sources.js';
 
 const PARIS_CENTER = [48.8566, 2.3522];
-const MIN_ZOOM_TO_LOAD = 13;
-const MAX_STORED_ITEMS = 3000;
 const MAX_LIST_ROWS = 400;
 const MAX_BOUNDS = [
   [47.9, 1.2],
@@ -39,12 +34,7 @@ function areaBounds(area) {
 }
 
 export default function App() {
-  // ----- search + filters -----
-  const [text, setText] = useState('bakery');
-  const [committed, setCommitted] = useState('bakery');
-  const debouncedText = useDebounced(text, 600);
-  useEffect(() => setCommitted(debouncedText), [debouncedText]);
-  const search = useMemo(() => resolveQuery(committed), [committed]);
+  // ----- area filters -----
   const [area, setArea] = useState('paris');
   const arrondissement = area.startsWith('arr-') ? getArrondissement(area.slice(4)) : null;
   const outlineBounds = area.startsWith('arr-') || area.startsWith('dep-') ? areaBounds(area) : null;
@@ -53,18 +43,14 @@ export default function App() {
   const mapRef = useRef(null);
   const clusterController = useRef(null);
   const [viewport, setViewport] = useState(null); // { bounds: [s,w,n,e], zoom }
-  const debouncedViewport = useDebounced(viewport, 700);
 
   // ----- data -----
-  const [osm, setOsm] = useState({ queryKey: null, items: new Map() });
-  const [status, setStatus] = useState({ loading: false, error: '', truncated: false });
   const [companyItems, setCompanyItems] = useState(() => new Map());
   const [companyQuery, setCompanyQuery] = useState('');
   const [companyBusy, setCompanyBusy] = useState(false);
   const [notice, setNotice] = useState('');
   const [showPartners, setShowPartners] = useState(false);
   const [partners, setPartners] = useState([]);
-  const coverage = useRef({ key: null, rects: [] });
   const companyController = useRef(null);
 
   // ----- interaction -----
@@ -98,49 +84,6 @@ export default function App() {
     []
   );
 
-  // ----- fetch businesses from Overpass for the visible bounds -----
-  // A new search replaces the previous results...
-  useEffect(() => {
-    coverage.current = { key: search?.key ?? null, rects: [] };
-    setOsm({ queryKey: search?.key ?? null, items: new Map() });
-    setStatus({ loading: false, error: '', truncated: false });
-  }, [search?.key]);
-
-  // ...and panning/zooming adds results for the new area (debounced, cached, throttled).
-  useEffect(() => {
-    if (!search || !debouncedViewport) return undefined;
-    if (debouncedViewport.zoom < MIN_ZOOM_TO_LOAD) {
-      setStatus((s) => ({ ...s, loading: false, error: '' }));
-      return undefined;
-    }
-    const visibleBounds = debouncedViewport.bounds;
-    if (coverage.current.rects.some((rect) => boundsContain(rect, visibleBounds))) return undefined; // already loaded
-
-    const snapped = snapBounds(visibleBounds);
-    const controller = new AbortController();
-    const searchKey = search.key;
-    setStatus((s) => ({ ...s, loading: true, error: '' }));
-
-    fetchBusinesses(search, snapped, { signal: controller.signal })
-      .then(({ items, truncated }) => {
-        if (coverage.current.key !== searchKey) return;
-        if (!truncated) coverage.current.rects.push(snapped);
-        setOsm((prev) => {
-          const next = new Map(prev.queryKey === searchKey ? prev.items : []);
-          for (const item of items) next.set(item.key, item);
-          while (next.size > MAX_STORED_ITEMS) next.delete(next.keys().next().value);
-          return { queryKey: searchKey, items: next };
-        });
-        setStatus({ loading: false, error: '', truncated });
-      })
-      .catch((err) => {
-        if (err.name === 'AbortError') return;
-        setStatus({ loading: false, error: err.message, truncated: false });
-      });
-
-    return () => controller.abort();
-  }, [search, debouncedViewport]);
-
   // Eau de Paris partner shops (optional layer).
   useEffect(() => {
     if (!showPartners || partners.length) return undefined;
@@ -161,11 +104,10 @@ export default function App() {
     const add = (item) => {
       if (matchesArrondissement(item, arrondissement)) out.push(item);
     };
-    osm.items.forEach(add);
     companyItems.forEach(add);
     if (showPartners) partners.forEach(add);
     return out;
-  }, [osm, companyItems, partners, showPartners, arrondissement]);
+  }, [companyItems, partners, showPartners, arrondissement]);
 
   const itemsByKey = useMemo(() => new Map(allItems.map((i) => [i.key, i])), [allItems]);
 
@@ -285,17 +227,11 @@ export default function App() {
   };
 
   // ----- status line -----
-  let message;
-  if (!search) message = 'Type a business type (bakery, pharmacy, café…) to search the map.';
-  else if (viewport && viewport.zoom < MIN_ZOOM_TO_LOAD) message = `Zoom in to street level (zoom ${MIN_ZOOM_TO_LOAD}+) to load ${search.label.toLowerCase()} results.`;
-  else if (status.error) message = status.error;
-  else if (status.loading) message = `Loading ${search.label.toLowerCase()} in this area…`;
-  else if (totalInView === 0) message = 'No businesses found in this view. Move the map or try another search.';
-  else
-    message =
-      `${totalInView} result${totalInView === 1 ? '' : 's'} in view` +
+  const message = totalInView
+    ? `${totalInView} result${totalInView === 1 ? '' : 's'} in view` +
       (totalInView > MAX_LIST_ROWS ? ` (list shows the first ${MAX_LIST_ROWS}; zoom in for the rest)` : '') +
-      (status.truncated ? '. OpenStreetMap results were capped at 300 for this area: zoom in for more.' : '.');
+      '.'
+    : 'Search the French company register or enable Paris Open Data partners to add businesses to the map.';
 
   return (
     <div className="app">
@@ -319,39 +255,7 @@ export default function App() {
       <main className="workspace">
         <aside className="sidebar">
           <section className="search-panel" aria-label="Search controls">
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                setCommitted(text);
-              }}
-            >
-              <label htmlFor="search">Business type</label>
-              <input
-                id="search"
-                className="text-input"
-                type="search"
-                value={text}
-                maxLength={40}
-                autoComplete="off"
-                placeholder="bakery, pharmacy, café, or a shop name"
-                onChange={(e) => setText(e.target.value)}
-              />
-              <div className="chips" role="group" aria-label="Quick picks">
-                {QUICK_PICKS.map((pick) => (
-                  <button
-                    key={pick.label}
-                    type="button"
-                    className={`chip${search?.label === pick.label ? ' is-on' : ''}`}
-                    onClick={() => {
-                      setText(pick.query);
-                      setCommitted(pick.query);
-                    }}
-                  >
-                    {pick.label}
-                  </button>
-                ))}
-              </div>
-
+            <div>
               <label htmlFor="area">Area</label>
               <div className="search-buttons">
                 <select id="area" value={area} onChange={(e) => onAreaChange(e.target.value)}>
@@ -383,7 +287,7 @@ export default function App() {
                   {locating ? '…' : '◎'}
                 </button>
               </div>
-            </form>
+            </div>
 
             <label className="check">
               <input type="checkbox" checked={showPartners} onChange={(e) => setShowPartners(e.target.checked)} />
@@ -405,7 +309,7 @@ export default function App() {
                   {companyBusy ? 'Searching…' : 'Add company results'}
                 </button>
                 <p className="search-hint">
-                  Active establishments matching the keyword inside the visible map (up to 25 companies per query). Not a full shop directory.
+                  Active establishments matching the keyword inside the visible map (up to 25 results per search). Not a full shop directory.
                 </p>
               </form>
             </details>
@@ -413,16 +317,16 @@ export default function App() {
 
           <section className="results-section" aria-live="polite">
             <div className="results-heading">
-              <h2>{search ? search.label : 'Businesses'}</h2>
+              <h2>Businesses</h2>
               <span className="result-count">{totalInView}</span>
             </div>
-            <p className={`result-message${status.error ? ' is-error' : ''}`}>{message}</p>
+            <p className="result-message">{message}</p>
             {notice && <p className="result-message">{notice}</p>}
             <BusinessList items={rows} selectedKey={selectedKey} records={records} distances={distances} onPick={pickFromList} />
           </section>
 
           <footer className="sidebar-footer">
-            Sources: OpenStreetMap (Overpass API), Paris Open Data, and the French company-search API. Payment methods are never guessed:
+            Sources: Paris Open Data and the French company-search API. OpenStreetMap is used for map tiles only. Payment methods are never guessed:
             every business starts as “Not verified”.
           </footer>
         </aside>
@@ -449,7 +353,6 @@ export default function App() {
             />
             <UserLocation position={userPos} />
           </MapContainer>
-          {status.loading && <div className="map-badge">Loading…</div>}
         </section>
       </main>
 

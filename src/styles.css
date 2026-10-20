@@ -56,10 +56,6 @@ label { display: block; margin: 14px 0 6px; font-size: 12px; font-weight: 700; c
 
 /* ---------- search panel ---------- */
 .search-panel { flex: none; padding: 6px 22px 16px; border-bottom: 1px solid var(--line); }
-.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-.chip { padding: 5px 11px; font-size: 12px; font-weight: 600; color: #34413c; background: var(--canvas); border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
-.chip:hover { background: var(--mint); }
-.chip.is-on { color: #fff; background: var(--green); border-color: var(--green); }
 .search-buttons { display: flex; gap: 8px; }
 .check { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; font-weight: 500; font-size: 13px; cursor: pointer; }
 .check input { width: 16px; height: 16px; accent-color: var(--green); }
@@ -90,9 +86,6 @@ label { display: block; margin: 14px 0 6px; font-size: 12px; font-weight: 700; c
 .visit-not-interested { color: var(--red); }
 .visit-visited { color: #4a5651; }
 .sidebar-footer { flex: none; padding: 12px 22px; color: var(--muted); font-size: 11px; line-height: 1.45; border-top: 1px solid var(--line); }
-
-/* ---------- map overlays ---------- */
-.map-badge { position: absolute; top: 14px; left: 50%; z-index: 500; transform: translateX(-50%); padding: 6px 14px; font-size: 12px; font-weight: 700; color: #fff; background: rgba(23, 36, 33, 0.88); border-radius: 999px; pointer-events: none; }
 
 /* custom pins */
 .pin-wrap { background: none; border: 0; }
