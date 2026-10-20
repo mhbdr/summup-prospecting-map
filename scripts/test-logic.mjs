@@ -4,6 +4,7 @@ import { ARRONDISSEMENTS, matchesArrondissement, getArrondissement } from '../sr
 import { safeUrl, distanceMeters, formatDistance } from '../src/lib/format.js';
 import { buildCsv, paymentLabel } from '../src/lib/records.js';
 import { boundsSearchPoint, normalizeBusiness, searchNearbyBusinesses } from '../src/lib/sources.js';
+import { BUSINESS_TYPES, getBusinessType } from '../src/lib/businessTypes.js';
 
 let passed = 0;
 const test = async (name, fn) => {
@@ -42,6 +43,11 @@ await test('distance helpers', () => {
 });
 
 await test('SIRENE nearby search: map radius, active geolocated businesses, and paging', async () => {
+  assert.equal(getBusinessType('restaurant').activityCodes.includes('56.10A'), true);
+  assert.equal(getBusinessType('clothing').activityCodes.includes('47.71Z'), true);
+  assert.equal(getBusinessType('unknown'), null);
+  assert.equal(BUSINESS_TYPES[0].id, 'all');
+
   const point = boundsSearchPoint([48.85, 2.34, 48.86, 2.36]);
   assert.ok(point.radius >= 1 && point.radius <= 50);
   assert.equal(point.coversBounds, true);
@@ -52,20 +58,22 @@ await test('SIRENE nearby search: map radius, active geolocated businesses, and 
   let requestUrl;
   globalThis.fetch = async (url) => {
     requestUrl = new URL(url);
+    const clothingSearch = requestUrl.searchParams.get('activite_principale') === '47.71Z,47.72A,47.72B';
     return new Response(JSON.stringify({
       page: 2,
       total_pages: 4,
       total_results: 100,
       results: [
         {
-          nom_complet: 'Boulangerie Test',
-          activite_principale: '47.24Z',
+          nom_complet: clothingSearch ? 'Clothing shop' : 'Boulangerie Test',
+          activite_principale: clothingSearch ? '47.71Z' : '47.24Z',
           matching_etablissements: [
             {
               siret: '12345678900011',
               etat_administratif: 'A',
               latitude: '48.855',
               longitude: '2.35',
+              activite_principale: clothingSearch ? '47.71Z' : '47.24Z',
               adresse: '1 Rue Test, 75001 Paris',
               code_postal: '75001',
               libelle_commune: 'PARIS',
@@ -97,6 +105,12 @@ await test('SIRENE nearby search: map radius, active geolocated businesses, and 
     assert.equal(result.items.length, 1);
     assert.equal(result.items[0].name, 'Boulangerie Test');
     assert.equal(result.items[0].postcode, '75001');
+    const clothingResult = await searchNearbyBusinesses([48.85, 2.34, 48.86, 2.36], 1, undefined, 'clothing');
+    assert.equal(requestUrl.searchParams.get('activite_principale'), '47.71Z,47.72A,47.72B');
+    assert.equal(requestUrl.searchParams.has('section_activite_principale'), false);
+    assert.equal(clothingResult.items.length, 1);
+    assert.equal(clothingResult.items[0].name, 'Clothing shop');
+    await assert.rejects(searchNearbyBusinesses([48.85, 2.34, 48.86, 2.36], 1, undefined, 'unknown'), /Unknown business type/);
   } finally {
     globalThis.fetch = originalFetch;
   }

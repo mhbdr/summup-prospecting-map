@@ -8,6 +8,7 @@ import { ARRONDISSEMENTS, getArrondissement, inBounds, matchesArrondissement } f
 import { DEPARTMENTS, IDF_BOUNDS, PARIS_BOUNDS, getDepartment, registryDepartments } from './lib/departments.js';
 import { distanceMeters } from './lib/format.js';
 import { DEFAULT_RECORD, buildCsv, downloadCsv, loadRecords, saveRecords } from './lib/records.js';
+import { BUSINESS_TYPES } from './lib/businessTypes.js';
 import { normalizeBusiness, searchCompanies, searchNearbyBusinesses } from './lib/sources.js';
 
 const PARIS_CENTER = [48.8566, 2.3522];
@@ -36,6 +37,7 @@ function areaBounds(area) {
 export default function App() {
   // ----- area filters -----
   const [area, setArea] = useState('paris');
+  const [businessType, setBusinessType] = useState('all');
   const arrondissement = area.startsWith('arr-') ? getArrondissement(area.slice(4)) : null;
   const outlineBounds = area.startsWith('arr-') || area.startsWith('dep-') ? areaBounds(area) : null;
 
@@ -51,6 +53,7 @@ export default function App() {
   const [nearbyBusy, setNearbyBusy] = useState(false);
   const [nearbyPage, setNearbyPage] = useState(0);
   const [nearbyTotalPages, setNearbyTotalPages] = useState(0);
+  const [nearbyType, setNearbyType] = useState('all');
   const [nearbyBounds, setNearbyBounds] = useState(null);
   const [notice, setNotice] = useState('');
   const companyController = useRef(null);
@@ -124,8 +127,32 @@ export default function App() {
   const onAreaChange = (value) => {
     setArea(value);
     setSelectedKey(null);
+    nearbyController.current?.abort();
+    nearbyController.current = null;
+    companyController.current?.abort();
+    companyController.current = null;
+    setCompanyBusy(false);
+    setNearbyBusy(false);
+    setNearbyPage(0);
+    setNearbyTotalPages(0);
+    setCompanyItems(new Map());
     const bounds = areaBounds(value);
     if (bounds && mapRef.current) mapRef.current.flyToBounds(toLeafletBounds(bounds), { padding: [16, 16], duration: 0.8 });
+  };
+
+  const onBusinessTypeChange = (value) => {
+    setBusinessType(value);
+    nearbyController.current?.abort();
+    nearbyController.current = null;
+    companyController.current?.abort();
+    companyController.current = null;
+    setCompanyBusy(false);
+    setNearbyBusy(false);
+    setNearbyPage(0);
+    setNearbyTotalPages(0);
+    setCompanyItems(new Map());
+    setSelectedKey(null);
+    setNotice('Business type changed. Search again to load matching results.');
   };
 
   const locate = () => {
@@ -215,12 +242,13 @@ export default function App() {
     }
   };
 
-  const runNearbySearch = async (page = 1, bounds = viewport?.bounds) => {
+  const runNearbySearch = async (page = 1, bounds = viewport?.bounds, typeId = businessType) => {
     if (!bounds) return;
     if (page === 1) {
       setNearbyBounds(bounds);
       setNearbyPage(0);
       setNearbyTotalPages(0);
+      setNearbyType(typeId);
       setCompanyItems(new Map());
     }
     nearbyController.current?.abort();
@@ -229,7 +257,7 @@ export default function App() {
     setNearbyBusy(true);
     setNotice(page === 1 ? 'Searching official open business data for this map area…' : `Loading more official results (page ${page})…`);
     try {
-      const result = await searchNearbyBusinesses(bounds, page, controller.signal);
+      const result = await searchNearbyBusinesses(bounds, page, controller.signal, typeId);
       if (nearbyController.current !== controller) return;
       setCompanyItems((previous) => {
         const next = new Map(previous);
@@ -239,8 +267,9 @@ export default function App() {
       setNearbyPage(result.page);
       setNearbyTotalPages(result.totalPages);
       setNearbyBounds(bounds);
+      const typeLabel = BUSINESS_TYPES.find((type) => type.id === typeId)?.label.toLowerCase() ?? 'businesses';
       setNotice(
-        `${result.items.length} geolocated active retail or food-service establishments found on page ${result.page}. ` +
+        `${result.items.length} geolocated active ${typeLabel} found on page ${result.page}. ` +
           `Search radius: ${result.radius} km from the map center.` +
           (result.coversBounds ? '' : ' This map view is larger than the API limit; zoom in and search other sections.') +
           ' Some businesses have no public coordinates.'
@@ -319,16 +348,29 @@ export default function App() {
               </div>
             </div>
 
+            <label htmlFor="business-type">Business type</label>
+            <select
+              id="business-type"
+              value={businessType}
+              disabled={nearbyBusy}
+              onChange={(event) => onBusinessTypeChange(event.target.value)}
+            >
+              {BUSINESS_TYPES.map((type) => (
+                <option key={type.id} value={type.id}>
+                  {type.label}
+                </option>
+              ))}
+            </select>
             <button
               type="button"
               className="button button-primary nearby-search-button"
               disabled={!viewport || nearbyBusy}
-              onClick={() => runNearbySearch(1, viewport?.bounds)}
+              onClick={() => runNearbySearch(1, viewport?.bounds, businessType)}
             >
-              {nearbyBusy && nearbyPage === 0 ? 'Searching open data…' : 'Find shops in this map area'}
+              {nearbyBusy && nearbyPage === 0 ? 'Searching open data…' : 'Find businesses in this map area'}
             </button>
             <p className="search-hint">
-              Official French SIRENE open data: active commerce and food-service businesses with published coordinates.
+              Official French SIRENE open data: active businesses with published coordinates. Choose a type, then search.
               Searches run only when you click; move the map and search again to cover another area.
             </p>
             {nearbyPage > 0 && nearbyPage < nearbyTotalPages && (
@@ -336,7 +378,7 @@ export default function App() {
                 type="button"
                 className="button button-secondary load-more-button"
                 disabled={nearbyBusy}
-                onClick={() => runNearbySearch(nearbyPage + 1, nearbyBounds)}
+                onClick={() => runNearbySearch(nearbyPage + 1, nearbyBounds, nearbyType)}
               >
                 {nearbyBusy ? 'Loading…' : `Load more businesses (${nearbyPage + 1} of ${nearbyTotalPages})`}
               </button>

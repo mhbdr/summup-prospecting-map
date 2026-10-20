@@ -36,7 +36,7 @@ The public, hosted version is at <https://mhbdr.github.io/summup-prospecting-map
 
 | Feature | How |
 |---|---|
-| Shop discovery | Click **Find shops in this map area** to query active retail and food-service establishments from the official SIRENE index. Continue through result pages to discover more. |
+| Shop discovery | Choose a business type (restaurants, clothing, bakeries, groceries, pharmacies, cafés, florists, bookshops, hairdressers, or all shops), then click **Find businesses in this map area** to query the official SIRENE index. Continue through result pages to discover more. |
 | Arrondissement filter | "Area" menu: All Paris, the 20 arrondissements, or another Île-de-France department. Uses each business's postcode (75001–75020) and falls back to an approximate bounding box. |
 | Map | OpenStreetMap tiles only; no OpenStreetMap business data is requested. |
 | Markers + clustering | `leaflet.markercluster`. Popups show name, address, opening hours, website (and phone). |
@@ -44,7 +44,7 @@ The public, hosted version is at <https://mhbdr.github.io/summup-prospecting-map
 | Near me | Browser geolocation: flies to you, draws an accuracy circle, sorts the list by distance. |
 | Visit tracking | Payment method, visit status and notes per business, saved **in this browser only** (same storage key as the old app, so existing notes carry over). Export to CSV. |
 
-The SIRENE open-data API returns up to 25 companies per page and matches active establishments in a radius of up to 50 km around the map center. Only entries with public coordinates are shown; zoom in and search adjacent areas for wider coverage. This is a government register, not a promise of every open shop: coverage depends on registration, geocoding, and the API's published results.
+The SIRENE open-data API returns up to 25 companies per page and matches active establishments in a radius of up to 50 km around the map center. Business-type options are based on French NAF activity codes. Only entries with public coordinates are shown; zoom in and search adjacent areas for wider coverage. This is a government register, not a promise of every open shop: coverage depends on registration, geocoding, and the API's published results.
 
 ## API keys
 

@@ -1,5 +1,6 @@
 // Open-data sources used by Field Finder.
 import { inBounds } from './arrondissements.js';
+import { getBusinessType } from './businessTypes.js';
 
 const COMPANY_SEARCH_API = 'https://recherche-entreprises.api.gouv.fr/search';
 const NEARBY_COMPANIES_API = 'https://recherche-entreprises.api.gouv.fr/near_point';
@@ -44,15 +45,29 @@ export function boundsSearchPoint([south, west, north, east]) {
   return { lat, lon, radius, coversBounds: maxDistance <= 50 };
 }
 
-function normalizeEstablishments(companies, bounds, source) {
+function normalizeEstablishments(companies, bounds, source, businessType = null) {
+  const activityCodes = businessType?.activityCodes;
+  const sections = businessType?.sections;
   const bySiret = new Map();
   for (const company of companies) {
     for (const establishment of company.matching_etablissements || []) {
       if (establishment.etat_administratif !== 'A' || !establishment.siret) continue;
+      const activity = establishment.activite_principale || company.activite_principale || '';
+      if (activityCodes && !activityCodes.includes(activity)) continue;
+      if (
+        sections &&
+        !sections.some((section) => {
+          const code = activity.slice(0, 2);
+          return section === 'G'
+            ? code === '45' || code === '46' || code === '47'
+            : section === 'I' && (code === '55' || code === '56');
+        })
+      ) {
+        continue;
+      }
       const lat = Number(establishment.latitude);
       const lon = Number(establishment.longitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lon) || !inBounds(lat, lon, bounds)) continue;
-      const activity = establishment.activite_principale || company.activite_principale || '';
       bySiret.set(establishment.siret, {
         key: `company/${establishment.siret}`,
         id: establishment.siret,
@@ -67,7 +82,10 @@ function normalizeEstablishments(companies, bounds, source) {
           company.nom_complet ||
           company.nom_raison_sociale ||
           'Unnamed establishment',
-        kind: `Company · NAF ${activity || 'not listed'}`,
+        kind:
+          businessType && businessType.id !== 'all'
+            ? businessType.label
+            : `Company · NAF ${activity || 'not listed'}`,
         fullAddress: establishment.adresse || '',
         housenumber: '',
         street: '',
@@ -82,19 +100,25 @@ function normalizeEstablishments(companies, bounds, source) {
   return [...bySiret.values()];
 }
 
-/** Active retail and food-service establishments in the current map area, from the official SIRENE index. */
-export async function searchNearbyBusinesses(bounds, page = 1, signal) {
+/** Active establishments matching a selected business type in the current map area, from SIRENE. */
+export async function searchNearbyBusinesses(bounds, page = 1, signal, businessTypeId = 'all') {
   const point = boundsSearchPoint(bounds);
+  const businessType = getBusinessType(businessTypeId);
+  if (!businessType) throw new Error(`Unknown business type: ${businessTypeId}`);
   const params = new URLSearchParams({
     lat: String(point.lat),
     long: String(point.lon),
     radius: String(point.radius),
-    section_activite_principale: 'G,I',
     per_page: '25',
     page: String(page),
     page_etablissements: '1',
     limite_matching_etablissements: '100',
   });
+  if (businessType.activityCodes) {
+    params.set('activite_principale', businessType.activityCodes.join(','));
+  } else {
+    params.set('section_activite_principale', businessType.sections.join(','));
+  }
   const t = withTimeout(signal);
   try {
     const res = await fetch(`${NEARBY_COMPANIES_API}?${params}`, { signal: t.signal });
@@ -102,7 +126,7 @@ export async function searchNearbyBusinesses(bounds, page = 1, signal) {
     const payload = await res.json();
     if (!Array.isArray(payload.results)) throw new Error('The French company-search API returned an unexpected response.');
     return {
-      items: normalizeEstablishments(payload.results, bounds, 'API Recherche d’entreprises · SIRENE'),
+      items: normalizeEstablishments(payload.results, bounds, 'API Recherche d’entreprises · SIRENE', businessType),
       page: payload.page || page,
       totalPages: payload.total_pages || 1,
       totalCompanies: payload.total_results || 0,
