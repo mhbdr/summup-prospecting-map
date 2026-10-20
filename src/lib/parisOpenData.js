@@ -4,7 +4,7 @@ import { boundsSearchPoint } from './sources.js';
 
 const API_ROOT = 'https://opendata.paris.fr/api/explore/v2.1/catalog/datasets';
 const PAGE_SIZE = 100;
-const MAX_RECORDS = 500;
+const MAX_RECORDS = 2000;
 const TIMEOUT_MS = 25000;
 
 export const PARIS_OPEN_DATA_SOURCES = [
@@ -201,7 +201,7 @@ async function fetchSource(source, bounds, businessTypeId, signal) {
   }
 }
 
-/** Search only the requested Paris open datasets, with a 500-record cap per source. */
+/** Search only the requested Paris open datasets, with a 2,000-record cap per source. */
 export async function searchParisOpenData(bounds, sourceIds, businessTypeId, signal) {
   const requested = PARIS_OPEN_DATA_SOURCES.filter(
     (source) => sourceIds.includes(source.id) && isParisSourceApplicable(source.id, businessTypeId)

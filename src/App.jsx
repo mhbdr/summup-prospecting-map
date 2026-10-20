@@ -9,7 +9,12 @@ import { DEPARTMENTS, IDF_BOUNDS, PARIS_BOUNDS, getDepartment, registryDepartmen
 import { distanceMeters } from './lib/format.js';
 import { DEFAULT_RECORD, buildCsv, downloadCsv, loadRecords, saveRecords } from './lib/records.js';
 import { BUSINESS_TYPES } from './lib/businessTypes.js';
-import { normalizeBusiness, searchCompanies, searchNearbyBusinesses } from './lib/sources.js';
+import {
+  normalizeBusiness,
+  searchAllNearbyBusinessPages,
+  searchCompanies,
+  searchNearbyBusinesses,
+} from './lib/sources.js';
 import {
   addBusinessesWithoutDuplicates,
   isParisSourceApplicable,
@@ -57,6 +62,7 @@ export default function App() {
   const [companyQuery, setCompanyQuery] = useState('');
   const [companyBusy, setCompanyBusy] = useState(false);
   const [nearbyBusy, setNearbyBusy] = useState(false);
+  const [nearbyLoadProgress, setNearbyLoadProgress] = useState(null);
   const [nearbyPage, setNearbyPage] = useState(0);
   const [nearbyTotalPages, setNearbyTotalPages] = useState(0);
   const [nearbyType, setNearbyType] = useState('all');
@@ -141,6 +147,7 @@ export default function App() {
     companyController.current = null;
     setCompanyBusy(false);
     setNearbyBusy(false);
+    setNearbyLoadProgress(null);
     setNearbyPage(0);
     setNearbyTotalPages(0);
     setParisSourceStatus({});
@@ -157,6 +164,7 @@ export default function App() {
     companyController.current = null;
     setCompanyBusy(false);
     setNearbyBusy(false);
+    setNearbyLoadProgress(null);
     setNearbyPage(0);
     setNearbyTotalPages(0);
     setParisSourceStatus({});
@@ -270,17 +278,17 @@ export default function App() {
           ])
         )
       );
-      setCompanyItems(new Map());
     }
     nearbyController.current?.abort();
     const controller = new AbortController();
     nearbyController.current = controller;
     setNearbyBusy(true);
+    setNearbyLoadProgress(null);
     setNotice(page === 1 ? 'Searching official open business data for this map area…' : `Loading more official results (page ${page})…`);
     try {
       const tasks = [{ id: 'sirene', run: () => searchNearbyBusinesses(bounds, page, controller.signal, typeId) }];
-    if (page === 1) {
-      sourceIds.filter((sourceId) => isParisSourceApplicable(sourceId, typeId)).forEach((sourceId) => {
+      if (page === 1) {
+        sourceIds.filter((sourceId) => isParisSourceApplicable(sourceId, typeId)).forEach((sourceId) => {
           tasks.push({
             id: sourceId,
             run: async () => {
@@ -339,7 +347,7 @@ export default function App() {
       sourceResults.forEach((result) => {
         summary.push(
           `${result.items.length} ${result.label} record${result.items.length === 1 ? '' : 's'}` +
-            (result.capped ? ' shown (500-record source limit reached)' : '')
+            (result.capped ? ' shown (2,000-record source limit reached)' : '')
         );
       });
       if (errors.length) summary.push(`Some sources failed: ${errors.join(' · ')}`);
@@ -352,6 +360,54 @@ export default function App() {
       if (nearbyController.current === controller) {
         nearbyController.current = null;
         setNearbyBusy(false);
+      }
+    }
+  };
+
+  const loadAllNearbyResults = async () => {
+    if (!nearbyBounds || nearbyBusy || nearbyPage >= nearbyTotalPages) return;
+    nearbyController.current?.abort();
+    const controller = new AbortController();
+    nearbyController.current = controller;
+    const startPage = nearbyPage + 1;
+    const total = nearbyTotalPages - nearbyPage;
+    setNearbyBusy(true);
+    setNearbyLoadProgress({ completed: 0, total });
+    setNotice(`Loading all remaining SIRENE pages (${total} pages, up to ${total * 25} more companies)…`);
+    try {
+      const result = await searchAllNearbyBusinessPages(
+        nearbyBounds,
+        startPage,
+        nearbyTotalPages,
+        controller.signal,
+        nearbyType,
+        (batch) => {
+          if (nearbyController.current !== controller) return;
+          setCompanyItems((previous) => addBusinessesWithoutDuplicates(previous, batch.items));
+          setNearbyPage(batch.page);
+          setNearbyLoadProgress({ completed: batch.completed, total: batch.total });
+        }
+      );
+      if (nearbyController.current !== controller) return;
+      const remainingLimitReached = nearbyTotalPages >= 400;
+      setNotice(
+        `Loaded all ${result.total} remaining SIRENE pages.` +
+          (remainingLimitReached
+            ? ' This search reached the API’s 10,000-company cap; narrow the business type or search smaller map areas to find additional establishments.'
+            : ' All pages returned for this map area and business type have been loaded.')
+      );
+    } catch (error) {
+      if (nearbyController.current !== controller) return;
+      setNotice(
+        error.name === 'AbortError'
+          ? 'Loading the remaining SIRENE results was interrupted (cancelled or timed out). Loaded pages are kept; retry to continue.'
+          : `Could not load all SIRENE pages: ${error.message}. Loaded pages are kept; retry to continue.`
+      );
+    } finally {
+      if (nearbyController.current === controller) {
+        nearbyController.current = null;
+        setNearbyBusy(false);
+        setNearbyLoadProgress(null);
       }
     }
   };
@@ -442,7 +498,7 @@ export default function App() {
             </button>
             <p className="search-hint">
               Official French SIRENE open data: active businesses with published coordinates. Choose a type, then search.
-              Searches run only when you click; move the map and search again to cover another area.
+              The first search shows one page. Load all pages, then move or zoom the map and search again to accumulate more results for the same business type. Each search is capped at 10,000 companies by the API.
             </p>
             <details className="source-controls">
               <summary>
@@ -467,7 +523,7 @@ export default function App() {
                             : parisSourceStatus[source.id]?.status === 'not-applicable'
                               ? 'Not available for this business type'
                               : parisSourceStatus[source.id]?.status === 'loaded'
-                                ? `${parisSourceStatus[source.id].count} located records${parisSourceStatus[source.id].limited ? ' · 500-record limit reached' : ''}`
+                                ? `${parisSourceStatus[source.id].count} located records${parisSourceStatus[source.id].limited ? ' · 2,000-record limit reached' : ''}`
                                 : source.id === 'terraces'
                                   ? 'Ville de Paris · ODbL · Paris only'
                                   : 'Eau de Paris · ODbL · Paris only'}
@@ -484,14 +540,26 @@ export default function App() {
               </p>
             </details>
             {nearbyPage > 0 && nearbyPage < nearbyTotalPages && (
-              <button
-                type="button"
-                className="button button-secondary load-more-button"
-                disabled={nearbyBusy}
-                onClick={() => runNearbySearch(nearbyPage + 1, nearbyBounds, nearbyType)}
-              >
-                {nearbyBusy ? 'Loading…' : `Load more businesses (${nearbyPage + 1} of ${nearbyTotalPages})`}
-              </button>
+              <>
+                <button
+                  type="button"
+                  className="button button-secondary load-more-button"
+                  disabled={nearbyBusy}
+                  onClick={() => runNearbySearch(nearbyPage + 1, nearbyBounds, nearbyType)}
+                >
+                  {nearbyBusy && !nearbyLoadProgress ? 'Loading…' : `Load 25 more businesses (page ${nearbyPage + 1} of ${nearbyTotalPages})`}
+                </button>
+                <button
+                  type="button"
+                  className="button button-secondary load-more-button"
+                  disabled={nearbyBusy}
+                  onClick={loadAllNearbyResults}
+                >
+                  {nearbyLoadProgress
+                    ? `Loading SIRENE pages… ${nearbyLoadProgress.completed} of ${nearbyLoadProgress.total}`
+                    : `Load all ${nearbyTotalPages - nearbyPage} remaining pages`}
+                </button>
+              </>
             )}
 
             <details className="registry">

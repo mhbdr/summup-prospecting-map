@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { ARRONDISSEMENTS, matchesArrondissement, getArrondissement } from '../src/lib/arrondissements.js';
 import { safeUrl, distanceMeters, formatDistance } from '../src/lib/format.js';
 import { buildCsv, paymentLabel } from '../src/lib/records.js';
-import { boundsSearchPoint, normalizeBusiness, searchNearbyBusinesses } from '../src/lib/sources.js';
+import {
+  boundsSearchPoint,
+  normalizeBusiness,
+  searchAllNearbyBusinessPages,
+  searchNearbyBusinesses,
+} from '../src/lib/sources.js';
 import { addBusinessesWithoutDuplicates, isParisSourceApplicable, searchParisOpenData } from '../src/lib/parisOpenData.js';
 import { BUSINESS_TYPES, getBusinessType } from '../src/lib/businessTypes.js';
 import { buildAddressSearchUrl, buildAlgoliaQueryUrl, normalizeAddressResults, normalizeAlgoliaResults } from '../src/lib/apiDemo.js';
@@ -141,6 +146,59 @@ await test('SIRENE nearby search: map radius, active geolocated businesses, and 
   }
 });
 
+await test('SIRENE load-all: retrieves every page in bounded batches and reports progress', async () => {
+  const originalFetch = globalThis.fetch;
+  const pages = [];
+  const progress = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = new URL(url);
+    const page = Number(requestUrl.searchParams.get('page'));
+    pages.push(page);
+    return new Response(JSON.stringify({
+      page,
+      total_pages: 5,
+      total_results: 125,
+      results: [{
+        nom_complet: `Shop ${page}`,
+        activite_principale: '47.11A',
+        matching_etablissements: [{
+          siret: `1234567890000${page}`,
+          etat_administratif: 'A',
+          latitude: '48.855',
+          longitude: '2.35',
+          activite_principale: '47.11A',
+          adresse: `${page} Rue Test, 75011 Paris`,
+          code_postal: '75011',
+          libelle_commune: 'PARIS',
+        }],
+      }],
+    }), { status: 200 });
+  };
+  try {
+    const result = await searchAllNearbyBusinessPages(
+      [48.85, 2.34, 48.86, 2.36],
+      2,
+      5,
+      undefined,
+      'all',
+      (batch) => progress.push({ page: batch.page, completed: batch.completed, items: batch.items.length })
+    );
+    assert.deepEqual(pages.sort((a, b) => a - b), [2, 3, 4, 5]);
+    assert.deepEqual(progress, [
+      { page: 4, completed: 3, items: 3 },
+      { page: 5, completed: 4, items: 1 },
+    ]);
+    assert.equal(result.page, 5);
+    assert.equal(result.total, 4);
+    await assert.rejects(
+      searchAllNearbyBusinessPages([48.85, 2.34, 48.86, 2.36], 1, 401, undefined, 'all'),
+      /at most 400 pages/
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 await test('Paris Open Data: geographic search, normalization, SIRET dedupe and source attribution', async () => {
   const originalFetch = globalThis.fetch;
   const urls = [];
@@ -202,7 +260,7 @@ await test('Paris Open Data: geographic search, normalization, SIRET dedupe and 
   }
 });
 
-await test('Paris Open Data: partner records normalize and source page cap is enforced', async () => {
+await test('Paris Open Data: partner records normalize and 2,000-record cap is enforced', async () => {
   const originalFetch = globalThis.fetch;
   const offsets = [];
   globalThis.fetch = async (url) => {
@@ -210,7 +268,7 @@ await test('Paris Open Data: partner records normalize and source page cap is en
     offsets.push(Number(requestUrl.searchParams.get('offset')));
     assert.equal(requestUrl.pathname, '/api/explore/v2.1/catalog/datasets/commerces-eau-de-paris/records');
     return new Response(JSON.stringify({
-      total_count: 501,
+      total_count: 2001,
       results: Array.from({ length: 100 }, (_, index) => ({
         id: String(index + offsets.at(-1)),
         nom_commerce: `Partner ${index + offsets.at(-1)}`,
@@ -228,8 +286,8 @@ await test('Paris Open Data: partner records normalize and source page cap is en
       ['waterPartners'],
       'all'
     );
-    assert.deepEqual(offsets, [0, 100, 200, 300, 400]);
-    assert.equal(result.items.length, 500);
+    assert.deepEqual(offsets, Array.from({ length: 20 }, (_, index) => index * 100));
+    assert.equal(result.items.length, 2000);
     assert.equal(result.capped, true);
     assert.equal(result.items[0].fullAddress, '12 Rue Example, 75011, Paris');
     assert.equal(result.items[0].kind, 'Eau de Paris partner · category not specified');
@@ -240,7 +298,7 @@ await test('Paris Open Data: partner records normalize and source page cap is en
       lon: 2.3501,
       fullAddress: 'A different but nearby address',
     };
-    assert.equal(addBusinessesWithoutDuplicates(new Map([[nearSirene.key, nearSirene]]), result.items).size, 500);
+    assert.equal(addBusinessesWithoutDuplicates(new Map([[nearSirene.key, nearSirene]]), result.items).size, 2000);
     const duplicateOnly = addBusinessesWithoutDuplicates(
       new Map([[nearSirene.key, nearSirene]]),
       [result.items[0]]

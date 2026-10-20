@@ -5,6 +5,8 @@ import { getBusinessType } from './businessTypes.js';
 const COMPANY_SEARCH_API = 'https://recherche-entreprises.api.gouv.fr/search';
 const NEARBY_COMPANIES_API = 'https://recherche-entreprises.api.gouv.fr/near_point';
 const TIMEOUT_MS = 25000;
+const MAX_SEARCH_PAGES = 400;
+const PAGE_BATCH_SIZE = 3;
 
 function withTimeout(signal) {
   const controller = new AbortController();
@@ -136,6 +138,38 @@ export async function searchNearbyBusinesses(bounds, page = 1, signal, businessT
   } finally {
     t.done();
   }
+}
+
+/** Load all remaining pages for an explicit user request, at most 3 requests concurrently. */
+export async function searchAllNearbyBusinessPages(bounds, startPage, totalPages, signal, businessTypeId, onBatch) {
+  if (
+    !Number.isInteger(startPage) ||
+    !Number.isInteger(totalPages) ||
+    startPage < 1 ||
+    totalPages < startPage ||
+    totalPages > MAX_SEARCH_PAGES
+  ) {
+    throw new Error(`The SIRENE page range is invalid (the API supports at most ${MAX_SEARCH_PAGES} pages per search).`);
+  }
+
+  const totalToLoad = totalPages - startPage + 1;
+  let completed = 0;
+  for (let firstPage = startPage; firstPage <= totalPages; firstPage += PAGE_BATCH_SIZE) {
+    if (signal?.aborted) throw new DOMException('The search was cancelled.', 'AbortError');
+    const lastPage = Math.min(totalPages, firstPage + PAGE_BATCH_SIZE - 1);
+    const pages = Array.from({ length: lastPage - firstPage + 1 }, (_, index) => firstPage + index);
+    const results = await Promise.all(
+      pages.map((page) => searchNearbyBusinesses(bounds, page, signal, businessTypeId))
+    );
+    completed += results.length;
+    onBatch?.({
+      items: results.flatMap((result) => result.items),
+      page: lastPage,
+      completed,
+      total: totalToLoad,
+    });
+  }
+  return { page: totalPages, total: totalToLoad };
 }
 
 /** French company register (API Recherche d'entreprises): active establishments inside bounds. */
