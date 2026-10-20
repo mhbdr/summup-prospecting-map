@@ -6,20 +6,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  build:
+  build-and-publish:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -30,18 +30,24 @@ jobs:
         run: npm test
       - name: Build the site
         run: npm run build
-      - name: Upload site artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
+      - name: Publish built site to the gh-pages branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch dist/.nojekyll
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          parent_args=()
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null; then
+            git fetch --no-tags origin gh-pages
+            parent_args=(-p "$(git rev-parse FETCH_HEAD)")
+          fi
+
+          index_file="$(mktemp)"
+          trap 'rm -f "$index_file"' EXIT
+          GIT_INDEX_FILE="$index_file" git read-tree --empty
+          GIT_INDEX_FILE="$index_file" GIT_WORK_TREE="$GITHUB_WORKSPACE/dist" git add -A -- .
+          tree="$(GIT_INDEX_FILE="$index_file" git write-tree)"
+          commit="$(git commit-tree "$tree" "${parent_args[@]}" -m "Publish site from ${GITHUB_SHA}")"
+          git push origin "$commit:refs/heads/gh-pages"
