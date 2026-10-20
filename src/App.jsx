@@ -10,6 +10,12 @@ import { distanceMeters } from './lib/format.js';
 import { DEFAULT_RECORD, buildCsv, downloadCsv, loadRecords, saveRecords } from './lib/records.js';
 import { BUSINESS_TYPES } from './lib/businessTypes.js';
 import { normalizeBusiness, searchCompanies, searchNearbyBusinesses } from './lib/sources.js';
+import {
+  addBusinessesWithoutDuplicates,
+  isParisSourceApplicable,
+  PARIS_OPEN_DATA_SOURCES,
+  searchParisOpenData,
+} from './lib/parisOpenData.js';
 
 const PARIS_CENTER = [48.8566, 2.3522];
 const MAX_LIST_ROWS = 400;
@@ -55,6 +61,8 @@ export default function App() {
   const [nearbyTotalPages, setNearbyTotalPages] = useState(0);
   const [nearbyType, setNearbyType] = useState('all');
   const [nearbyBounds, setNearbyBounds] = useState(null);
+  const [parisSources, setParisSources] = useState({ terraces: true, waterPartners: true });
+  const [parisSourceStatus, setParisSourceStatus] = useState({});
   const [notice, setNotice] = useState('');
   const companyController = useRef(null);
   const nearbyController = useRef(null);
@@ -135,6 +143,7 @@ export default function App() {
     setNearbyBusy(false);
     setNearbyPage(0);
     setNearbyTotalPages(0);
+    setParisSourceStatus({});
     setCompanyItems(new Map());
     const bounds = areaBounds(value);
     if (bounds && mapRef.current) mapRef.current.flyToBounds(toLeafletBounds(bounds), { padding: [16, 16], duration: 0.8 });
@@ -150,6 +159,7 @@ export default function App() {
     setNearbyBusy(false);
     setNearbyPage(0);
     setNearbyTotalPages(0);
+    setParisSourceStatus({});
     setCompanyItems(new Map());
     setSelectedKey(null);
     setNotice('Business type changed. Search again to load matching results.');
@@ -221,11 +231,7 @@ export default function App() {
       const [s, w, n, e] = viewport.bounds;
       const department = registryDepartments(area, [(s + n) / 2, (w + e) / 2]);
       const found = await searchCompanies(query, department, viewport.bounds, controller.signal);
-      setCompanyItems((prev) => {
-        const next = new Map(prev);
-        found.forEach((item) => next.set(item.key, item));
-        return next;
-      });
+      setCompanyItems((prev) => addBusinessesWithoutDuplicates(prev, found));
       setNotice(
         found.length
           ? `${found.length} active establishment${found.length === 1 ? '' : 's'} matched “${query}” in this map area (the API returns up to 25 companies per search).`
@@ -244,11 +250,26 @@ export default function App() {
 
   const runNearbySearch = async (page = 1, bounds = viewport?.bounds, typeId = businessType) => {
     if (!bounds) return;
+    const sourceIds = page === 1
+      ? Object.entries(parisSources).filter(([, enabled]) => enabled).map(([id]) => id)
+      : [];
     if (page === 1) {
       setNearbyBounds(bounds);
       setNearbyPage(0);
       setNearbyTotalPages(0);
       setNearbyType(typeId);
+      setParisSourceStatus(
+        Object.fromEntries(
+          PARIS_OPEN_DATA_SOURCES.map(({ id }) => [
+            id,
+            sourceIds.includes(id)
+              ? isParisSourceApplicable(id, typeId)
+                ? { status: 'loading' }
+                : { status: 'not-applicable' }
+              : { status: 'idle' },
+          ])
+        )
+      );
       setCompanyItems(new Map());
     }
     nearbyController.current?.abort();
@@ -257,23 +278,73 @@ export default function App() {
     setNearbyBusy(true);
     setNotice(page === 1 ? 'Searching official open business data for this map area…' : `Loading more official results (page ${page})…`);
     try {
-      const result = await searchNearbyBusinesses(bounds, page, controller.signal, typeId);
+      const tasks = [{ id: 'sirene', run: () => searchNearbyBusinesses(bounds, page, controller.signal, typeId) }];
+    if (page === 1) {
+      sourceIds.filter((sourceId) => isParisSourceApplicable(sourceId, typeId)).forEach((sourceId) => {
+          tasks.push({
+            id: sourceId,
+            run: async () => {
+              const [result] = await searchParisOpenData(bounds, [sourceId], typeId, controller.signal);
+              return result;
+            },
+          });
+        });
+      }
+      const outcomes = await Promise.allSettled(tasks.map((task) => task.run()));
       if (nearbyController.current !== controller) return;
-      setCompanyItems((previous) => {
-        const next = new Map(previous);
-        result.items.forEach((item) => next.set(item.key, item));
-        return next;
+      const additions = [];
+      const errors = [];
+      const completed = {};
+      outcomes.forEach((outcome, index) => {
+        const { id } = tasks[index];
+        if (outcome.status === 'rejected') {
+          const sourceLabel = id === 'sirene' ? 'SIRENE' : PARIS_OPEN_DATA_SOURCES.find((source) => source.id === id)?.label;
+          errors.push(`${sourceLabel}: ${outcome.reason?.message || 'request failed'}`);
+          if (id !== 'sirene') completed[id] = { status: 'error', error: outcome.reason?.message || 'Request failed.' };
+          return;
+        }
+        const result = outcome.value;
+        additions.push(...result.items);
+        if (id === 'sirene') {
+          setNearbyPage(result.page);
+          setNearbyTotalPages(result.totalPages);
+          setNearbyBounds(bounds);
+        } else {
+          completed[id] = {
+            status: 'loaded',
+            count: result.items.length,
+            limited: result.capped,
+          };
+        }
       });
-      setNearbyPage(result.page);
-      setNearbyTotalPages(result.totalPages);
-      setNearbyBounds(bounds);
+      setParisSourceStatus((previous) => ({ ...previous, ...completed }));
+      if (page === 1 && !outcomes.some((outcome, index) => tasks[index].id === 'sirene' && outcome.status === 'fulfilled')) {
+        setNearbyPage(0);
+        setNearbyTotalPages(0);
+      }
+      setCompanyItems((previous) => addBusinessesWithoutDuplicates(previous, additions));
       const typeLabel = BUSINESS_TYPES.find((type) => type.id === typeId)?.label.toLowerCase() ?? 'businesses';
-      setNotice(
-        `${result.items.length} geolocated active ${typeLabel} found on page ${result.page}. ` +
-          `Search radius: ${result.radius} km from the map center.` +
-          (result.coversBounds ? '' : ' This map view is larger than the API limit; zoom in and search other sections.') +
-          ' Some businesses have no public coordinates.'
+      const sireneResult = outcomes.find((outcome, index) => tasks[index].id === 'sirene');
+      const sourceResults = outcomes.flatMap((outcome, index) =>
+        outcome.status === 'fulfilled' && tasks[index].id !== 'sirene' ? [outcome.value] : []
       );
+      const summary = [];
+      if (sireneResult?.status === 'fulfilled') {
+        const result = sireneResult.value;
+        summary.push(
+          `${result.items.length} geolocated active ${typeLabel} from SIRENE (page ${result.page}; ${result.radius} km search radius)` +
+            (result.coversBounds ? '' : '; this view exceeds the API radius limit')
+        );
+      }
+      sourceResults.forEach((result) => {
+        summary.push(
+          `${result.items.length} ${result.label} record${result.items.length === 1 ? '' : 's'}` +
+            (result.capped ? ' shown (500-record source limit reached)' : '')
+        );
+      });
+      if (errors.length) summary.push(`Some sources failed: ${errors.join(' · ')}`);
+      if (!summary.length) summary.push('No source returned results. Check the source error and try again.');
+      setNotice(`${summary.join('. ')}. Paris Open Data records are supplementary and may overlap SIRENE.`);
     } catch (error) {
       if (nearbyController.current !== controller) return;
       setNotice(error.name === 'AbortError' ? 'The open-data search timed out. Please try again.' : error.message);
@@ -373,6 +444,45 @@ export default function App() {
               Official French SIRENE open data: active businesses with published coordinates. Choose a type, then search.
               Searches run only when you click; move the map and search again to cover another area.
             </p>
+            <details className="source-controls">
+              <summary>
+                Supplement with Paris Open Data ({Object.values(parisSources).filter(Boolean).length} enabled)
+              </summary>
+              <div className="source-options">
+                {PARIS_OPEN_DATA_SOURCES.map((source) => (
+                  <label key={source.id} className="source-option">
+                    <input
+                      type="checkbox"
+                      checked={parisSources[source.id]}
+                      disabled={nearbyBusy}
+                      onChange={(event) => setParisSources((previous) => ({ ...previous, [source.id]: event.target.checked }))}
+                    />
+                    <span>
+                      <strong>{source.label}</strong>
+                      <small>
+                        {parisSourceStatus[source.id]?.status === 'loading'
+                          ? 'Loading…'
+                          : parisSourceStatus[source.id]?.status === 'error'
+                            ? `Error: ${parisSourceStatus[source.id].error}`
+                            : parisSourceStatus[source.id]?.status === 'not-applicable'
+                              ? 'Not available for this business type'
+                              : parisSourceStatus[source.id]?.status === 'loaded'
+                                ? `${parisSourceStatus[source.id].count} located records${parisSourceStatus[source.id].limited ? ' · 500-record limit reached' : ''}`
+                                : source.id === 'terraces'
+                                  ? 'Ville de Paris · ODbL · Paris only'
+                                  : 'Eau de Paris · ODbL · Paris only'}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <p className="search-hint">
+                Loaded only when you search. Terrace/retail permits and partner listings can be stale or duplicate a SIRENE business; verify leads before visiting.
+              </p>
+              <p className="restricted-source">
+                <strong>TheFork & MICHELIN Guide:</strong> not loaded. Their listing data is not available here under a public reuse licence or documented public search API. Integration requires written partner/API authorization and licensed access; do not put private credentials in this static app.
+              </p>
+            </details>
             {nearbyPage > 0 && nearbyPage < nearbyTotalPages && (
               <button
                 type="button"
@@ -416,8 +526,7 @@ export default function App() {
           </section>
 
           <footer className="sidebar-footer">
-            Sources: official French SIRENE open data. OpenStreetMap is used for map tiles only. Payment methods are never guessed:
-            every business starts as “Not verified”.
+            Sources: French SIRENE and optional Ville de Paris/Eau de Paris Open Data (ODbL). TheFork and MICHELIN listings require licensed partner access. OpenStreetMap is used for map tiles only. Payment methods are never guessed: every business starts as “Not verified”.
           </footer>
         </aside>
 

@@ -4,6 +4,7 @@ import { ARRONDISSEMENTS, matchesArrondissement, getArrondissement } from '../sr
 import { safeUrl, distanceMeters, formatDistance } from '../src/lib/format.js';
 import { buildCsv, paymentLabel } from '../src/lib/records.js';
 import { boundsSearchPoint, normalizeBusiness, searchNearbyBusinesses } from '../src/lib/sources.js';
+import { addBusinessesWithoutDuplicates, isParisSourceApplicable, searchParisOpenData } from '../src/lib/parisOpenData.js';
 import { BUSINESS_TYPES, getBusinessType } from '../src/lib/businessTypes.js';
 import { buildAddressSearchUrl, buildAlgoliaQueryUrl, normalizeAddressResults, normalizeAlgoliaResults } from '../src/lib/apiDemo.js';
 
@@ -135,6 +136,116 @@ await test('SIRENE nearby search: map radius, active geolocated businesses, and 
     assert.equal(clothingResult.items.length, 1);
     assert.equal(clothingResult.items[0].name, 'Clothing shop');
     await assert.rejects(searchNearbyBusinesses([48.85, 2.34, 48.86, 2.36], 1, undefined, 'unknown'), /Unknown business type/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+await test('Paris Open Data: geographic search, normalization, SIRET dedupe and source attribution', async () => {
+  const originalFetch = globalThis.fetch;
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = new URL(url);
+    urls.push(requestUrl);
+    assert.equal(requestUrl.pathname, '/api/explore/v2.1/catalog/datasets/terrasses-autorisations/records');
+    assert.match(requestUrl.searchParams.get('where'), /^within_distance\(geo_point_2d,geom'POINT\(/);
+    assert.match(requestUrl.searchParams.get('select'), /siret/);
+    return new Response(JSON.stringify({
+      total_count: 2,
+      results: [
+        {
+          nom_enseigne: 'Café Test',
+          nom_societe: 'Test SARL',
+          siret: '12345678900011',
+          adresse: '10 Rue Test',
+          arrondissement: '75011',
+          typologie: 'TERRASSE OUVERTE',
+          geo_point_2d: { lat: 48.855, lon: 2.35 },
+        },
+        {
+          nom_enseigne: 'Outside',
+          siret: '12345678900012',
+          adresse: 'Outside Paris',
+          arrondissement: '75011',
+          typologie: 'TERRASSE OUVERTE',
+          geo_point_2d: { lat: 48.9, lon: 2.35 },
+        },
+      ],
+    }), { status: 200 });
+  };
+  try {
+    const [result] = await searchParisOpenData(
+      [48.85, 2.34, 48.86, 2.36],
+      ['terraces'],
+      'all'
+    );
+    assert.equal(urls.length, 1);
+    assert.equal(result.totalCount, 2);
+    assert.equal(result.items.length, 1);
+    assert.equal(result.items[0].key, 'company/12345678900011');
+    assert.equal(result.items[0].source, 'Ville de Paris Open Data · terrace authorization');
+    assert.equal(result.items[0].postcode, '75011');
+    assert.equal(isParisSourceApplicable('waterPartners', 'restaurant'), false);
+    assert.equal(isParisSourceApplicable('terraces', 'restaurant'), true);
+
+    const sirene = {
+      key: 'company/12345678900011',
+      name: 'Cafe Test',
+      fullAddress: '10 rue Test, 75011 Paris',
+      source: 'API Recherche d’entreprises · SIRENE',
+    };
+    const merged = addBusinessesWithoutDuplicates(new Map([[sirene.key, sirene]]), result.items);
+    assert.equal(merged.size, 1);
+    assert.equal(merged.get(sirene.key).source, sirene.source);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+await test('Paris Open Data: partner records normalize and source page cap is enforced', async () => {
+  const originalFetch = globalThis.fetch;
+  const offsets = [];
+  globalThis.fetch = async (url) => {
+    const requestUrl = new URL(url);
+    offsets.push(Number(requestUrl.searchParams.get('offset')));
+    assert.equal(requestUrl.pathname, '/api/explore/v2.1/catalog/datasets/commerces-eau-de-paris/records');
+    return new Response(JSON.stringify({
+      total_count: 501,
+      results: Array.from({ length: 100 }, (_, index) => ({
+        id: String(index + offsets.at(-1)),
+        nom_commerce: `Partner ${index + offsets.at(-1)}`,
+        num_voie: '12',
+        nom_voie: 'Rue Example',
+        code_postal: '75011',
+        nom_commune: 'Paris',
+        geo_point_2d: { lat: 48.855, lon: 2.35 },
+      })),
+    }), { status: 200 });
+  };
+  try {
+    const [result] = await searchParisOpenData(
+      [48.85, 2.34, 48.86, 2.36],
+      ['waterPartners'],
+      'all'
+    );
+    assert.deepEqual(offsets, [0, 100, 200, 300, 400]);
+    assert.equal(result.items.length, 500);
+    assert.equal(result.capped, true);
+    assert.equal(result.items[0].fullAddress, '12 Rue Example, 75011, Paris');
+    assert.equal(result.items[0].kind, 'Eau de Paris partner · category not specified');
+    const nearSirene = {
+      key: 'company/12345678900011',
+      name: 'Partner 0',
+      lat: 48.8551,
+      lon: 2.3501,
+      fullAddress: 'A different but nearby address',
+    };
+    assert.equal(addBusinessesWithoutDuplicates(new Map([[nearSirene.key, nearSirene]]), result.items).size, 500);
+    const duplicateOnly = addBusinessesWithoutDuplicates(
+      new Map([[nearSirene.key, nearSirene]]),
+      [result.items[0]]
+    );
+    assert.equal(duplicateOnly.size, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }

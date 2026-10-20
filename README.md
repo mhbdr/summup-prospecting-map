@@ -47,7 +47,8 @@ To run the demo locally, use `npm install` and `npm run dev`, then open `/api-de
 
 | Feature | How |
 |---|---|
-| Shop discovery | Choose a business type (restaurants, clothing, bakeries, groceries, pharmacies, cafés, florists, bookshops, hairdressers, or all shops), then click **Find businesses in this map area** to query the official SIRENE index. Continue through result pages to discover more. |
+| Shop discovery | Choose a business type (restaurants, clothing, bakeries, groceries, pharmacies, cafés, florists, bookshops, hairdressers, or all shops), then click **Find businesses in this map area**. The official French SIRENE index is always searched; optional Paris Open Data layers can supplement it. Continue through SIRENE result pages to discover more. |
+| Paris Open Data | The expandable source controls enable **Terraces & storefront permits** and **Eau de Paris partner businesses**. These sources are queried only after an explicit search, for the current map area. Each is capped at 500 records per search; a cap warning is shown when applicable. Only Paris locations are covered. |
 | Arrondissement filter | "Area" menu: All Paris, the 20 arrondissements, or another Île-de-France department. Uses each business's postcode (75001–75020) and falls back to an approximate bounding box. |
 | Map | OpenStreetMap tiles only; no OpenStreetMap business data is requested. |
 | Markers + clustering | `leaflet.markercluster`. Popups show name, address, opening hours, website (and phone). |
@@ -57,16 +58,28 @@ To run the demo locally, use `npm install` and `npm run dev`, then open `/api-de
 
 The SIRENE open-data API returns up to 25 companies per page and matches active establishments in a radius of up to 50 km around the map center. Business-type options are based on French NAF activity codes. Only entries with public coordinates are shown; zoom in and search adjacent areas for wider coverage. This is a government register, not a promise of every open shop: coverage depends on registration, geocoding, and the API's published results.
 
+The two optional Paris datasets add different coverage: Paris lists authorized terraces and retail displays (including the permit type and, when supplied, SIRET); Eau de Paris lists participating businesses in its public drinking-water initiative. Neither is a complete/current business register, and the Eau de Paris dataset does not specify each partner's business category. Paris records with a matching SIRET reuse the SIRENE key; matching name/address records are also deduplicated while keeping the SIRENE record. A terrace permit or partner listing is a prospecting clue, not proof of current trading status. Verify details directly.
+
+TheFork and the [MICHELIN Guide](https://guide.michelin.com/) are not queried or used to seed map results. No publicly reusable listing dataset or public search API for this prospecting use was identified. Their data requires permission and appropriate partner/API licensing from [TheFork](https://www.thefork.com/) and Michelin. The current GitHub Pages app is static, so private partner credentials must not be embedded in it; an authorized integration would need an approved server-side proxy or a specifically browser-safe partner API/key.
+
 ## API keys
 
-No API keys are required for the default OpenStreetMap tiles or French company search. This ZIP version uses Leaflet/OpenStreetMap rather than the optional Google Maps mode from the previous version. If you later use a keyed tile provider, put the configuration in `.env` (`VITE_TILE_URL=…`). `.env` is git-ignored; only `.env.example` is committed. Vite exposes `VITE_*` variables to the browser, so restrict any key by HTTP referrer in the provider's dashboard.
+No API keys are required for the default OpenStreetMap tiles, French company search, or Paris Open Data sources. This ZIP version uses Leaflet/OpenStreetMap rather than the optional Google Maps mode from the previous version. If you later use a keyed tile provider, put the configuration in `.env` (`VITE_TILE_URL=…`). `.env` is git-ignored; only `.env.example` is committed. Vite exposes `VITE_*` variables to the browser, so restrict any key by HTTP referrer in the provider's dashboard.
 
 ## Differences from the previous version
 
 - Google Maps mode is not included in this ZIP version; it uses React-Leaflet and OpenStreetMap tiles without an API key.
 - The "Department" menu and "Search this map area" button are replaced by the **Area** menu and an explicit **Find shops in this map area** action.
-- OpenStreetMap provides map tiles only. Business listings come from the French SIRENE register; panning the map does not automatically request business data.
+- OpenStreetMap provides map tiles only. Business listings come from the French SIRENE register and optional Paris Open Data layers; panning the map does not automatically request business data.
 
-## Data sources and licences
+## Data sources, terms and attribution
 
-Map tiles © OpenStreetMap contributors (ODbL). Business records: API Recherche d'entreprises backed by the French SIRENE register (data.gouv.fr). Payment methods and whether a business is open now are not supplied by SIRENE and must be verified in person. Use public services considerately and follow their terms.
+| Source | Use and coverage | Licence / access |
+|---|---|---|
+| [API Recherche d'entreprises](https://recherche-entreprises.api.gouv.fr/) / French SIRENE register | Active establishments with public coordinates; query around the visible map centre (up to 50 km) and paginate 25 companies at a time. | French public business-register data; API is public and used without credentials. Attribution is shown on each result. |
+| [Ville de Paris Open Data · Terrasses et étalages : Autorisations](https://opendata.paris.fr/explore/dataset/terrasses-autorisations/) | Authorized terraces and storefront displays in Paris, filtered around the visible map centre; up to 500 records per search. SIRET is used to deduplicate against SIRENE when available. | Open Database License (ODbL); attribute Ville de Paris Open Data. |
+| [Eau de Paris Open Data · Commerces](https://opendata.paris.fr/explore/dataset/commerces-eau-de-paris/) | Participating Paris businesses in the “Ici je choisis l’Eau de Paris” initiative; up to 500 records per search. The dataset does not give a business category. | Open Database License (ODbL); attribute Eau de Paris / Ville de Paris Open Data. |
+| TheFork and MICHELIN Guide | Not integrated. | No public-use listing dataset/API was identified for this app. Obtain written partner authorization and a suitable data/API licence before use. Do not put private credentials in a Vite `VITE_*` variable. |
+| OpenStreetMap | Map tiles only, not business listings. | © OpenStreetMap contributors (ODbL). |
+
+Sources are requested only when the user clicks search; Paris Open Data queries are spatially filtered, paged, and capped to avoid downloading entire datasets on map renders or movement. Results can overlap across sources or be outdated. SIRENE and Paris records are not guaranteed to include every business. Payment methods and whether a business is open now are not supplied by these datasets and must be verified in person. Follow each provider's current terms and attribution requirements.
