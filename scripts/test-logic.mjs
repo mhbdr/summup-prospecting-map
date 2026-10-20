@@ -5,6 +5,7 @@ import { safeUrl, distanceMeters, formatDistance } from '../src/lib/format.js';
 import { buildCsv, paymentLabel } from '../src/lib/records.js';
 import { boundsSearchPoint, normalizeBusiness, searchNearbyBusinesses } from '../src/lib/sources.js';
 import { BUSINESS_TYPES, getBusinessType } from '../src/lib/businessTypes.js';
+import { buildAddressSearchUrl, buildAlgoliaQueryUrl, normalizeAddressResults, normalizeAlgoliaResults } from '../src/lib/apiDemo.js';
 
 let passed = 0;
 const test = async (name, fn) => {
@@ -33,6 +34,29 @@ await test('safeUrl blocks javascript: and fixes bare domains', () => {
   assert.equal(safeUrl('chez-a.fr'), 'https://chez-a.fr/');
   assert.equal(safeUrl('http://x.org/a'), 'http://x.org/a');
   assert.equal(safeUrl(''), null);
+});
+
+await test('API demo: public address URL and source-specific result normalization', () => {
+  const addressUrl = new URL(buildAddressSearchUrl('  20 avenue de Ségur, Paris  '));
+  assert.equal(addressUrl.origin, 'https://api-adresse.data.gouv.fr');
+  assert.equal(addressUrl.pathname, '/search/');
+  assert.equal(addressUrl.searchParams.get('q'), '20 avenue de Ségur, Paris');
+  assert.equal(addressUrl.searchParams.get('limit'), '6');
+  const addresses = normalizeAddressResults({
+    features: [
+      { geometry: { coordinates: [2.31, 48.85] }, properties: { id: 'addr-1', label: '20 avenue de Ségur', postcode: '75007', city: 'Paris' } },
+      { geometry: { coordinates: [null, 48.8] }, properties: { label: 'Invalid' } },
+    ],
+  });
+  assert.equal(addresses.length, 1);
+  assert.deepEqual([addresses[0].lat, addresses[0].lon, addresses[0].source], [48.85, 2.31, 'api-adresse.data.gouv.fr']);
+  assert.equal(addresses[0].subtitle, '75007 Paris');
+  assert.equal(buildAlgoliaQueryUrl('AB12CD', 'shops fr'), 'https://AB12CD-dsn.algolia.net/1/indexes/shops%20fr/query');
+  assert.throws(() => buildAlgoliaQueryUrl('bad host', 'shops'), /Application ID/);
+  assert.throws(() => buildAlgoliaQueryUrl('AB12CD', ' '), /index/);
+  const algolia = normalizeAlgoliaResults({ hits: [{ objectID: 'shop-1', name: 'Shop', address: 'Paris', _geoloc: { lat: '48.8', lng: '2.3' } }] });
+  assert.deepEqual([algolia[0].title, algolia[0].lat, algolia[0].lon, algolia[0].source], ['Shop', 48.8, 2.3, 'Algolia']);
+  assert.deepEqual(normalizeAlgoliaResults({ hits: [] }), []);
 });
 
 await test('distance helpers', () => {

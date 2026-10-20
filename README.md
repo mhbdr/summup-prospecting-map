@@ -32,6 +32,17 @@ Logic tests: `npm test`.
 
 The public, hosted version is at <https://mhbdr.github.io/summup-prospecting-map/>.
 
+## API comparison demo
+
+The standalone [API Explorer demo](https://mhbdr.github.io/summup-api-explorer/api-demo.html) compares the French address search API, a user-configured Algolia index, and MapTiler tiles. The existing business map remains available at the URL above.
+
+- French address search uses the public `https://api-adresse.data.gouv.fr/search/` endpoint and works without credentials. Select a result to center the map.
+- MapTiler requires your own API key. Enter it in the demo to switch the map tiles; without a key, the map uses OpenStreetMap.
+- Algolia requires your own Application ID, Search-only API key, and configured index. Until all three are supplied, the demo shows a setup-needed state rather than sample results.
+- Entered credentials are held in page memory only and are not saved in local storage or the page URL. The MapTiler key is sent to MapTiler as part of its tile requests; Algolia credentials are sent to Algolia for searches.
+
+To run the demo locally, use `npm install` and `npm run dev`, then open `/api-demo.html`.
+
 ## What it does
 
 | Feature | How |
