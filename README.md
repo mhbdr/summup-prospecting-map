@@ -39,6 +39,7 @@ The public, hosted version is at <https://mhbdr.github.io/summup-prospecting-map
 |---|---|
 | Business-type search | Type `bakery`, `boulangerie`, `pharmacie`, `café`… (English and French aliases, accents ignored) or any shop name. Quick-pick chips included. |
 | Arrondissement filter | "Area" menu: All Paris, the 20 arrondissements, or another Île-de-France department. Uses each business's postcode (75001–75020) and falls back to an approximate bounding box. |
+| City search | Choose a department, then type or select a commune in the city-search box to center the map there. Commune names and centers come from the French government geo.api.gouv.fr service. |
 | Data | OpenStreetMap **Overpass API**, requested for the map's visible bounds. |
 | Markers + clustering | `leaflet.markercluster`. Popups show name, address, opening hours, website (and phone). |
 | Side list | Shows the businesses in the current view. Click one to zoom to its marker and open the popup. Selecting a marker highlights its row. |

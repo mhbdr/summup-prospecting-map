@@ -9,6 +9,7 @@ import {
 } from '../src/lib/overpass.js';
 import { buildCsv, paymentLabel } from '../src/lib/records.js';
 import { normalizeBusiness } from '../src/lib/sources.js';
+import { matchCommune, normalizeCommuneName, parseCommunes } from '../src/lib/communes.js';
 
 let passed = 0;
 const test = async (name, fn) => {
@@ -41,6 +42,25 @@ await test('arrondissements: 20 entries, valid boxes, postcode matching', () => 
   assert.ok(matchesArrondissement({ postcode: '', lat: 48.859, lon: 2.379 }, a11));
   assert.ok(matchesArrondissement({ postcode: '75116', lat: 0, lon: 0 }, getArrondissement(16)));
   assert.ok(matchesArrondissement({ postcode: '75011', lat: 0, lon: 0 }, null));
+});
+
+await test('communes: parse department centers and match names without accents or case', () => {
+  const communes = parseCommunes([
+    {
+      nom: 'Évry-Courcouronnes',
+      code: '91228',
+      codesPostaux: ['91000'],
+      centre: { type: 'Point', coordinates: [2.45, 48.63] },
+    },
+    { nom: 'No center', code: '91000', centre: null },
+  ]);
+  assert.equal(communes.length, 1);
+  assert.equal(communes[0].lat, 48.63);
+  assert.deepEqual(communes[0].postcodes, ['91000']);
+  assert.equal(matchCommune('evry-courcouronnes', communes).code, '91228');
+  assert.equal(normalizeCommuneName('  ÉVRY  '), 'evry');
+  assert.equal(matchCommune('unknown', communes), null);
+  assert.throws(() => parseCommunes({}), /unexpected response/);
 });
 
 await test('snapBounds expands outward and is stable', () => {
